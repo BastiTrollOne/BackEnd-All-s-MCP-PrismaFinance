@@ -59,10 +59,23 @@ async def openwebui_node(state: AgentState, config):
     """Invoca al MCPAgent (Admin)"""
     query = state["messages"][-1].content
     mcp_agent = config["configurable"]["mcp_agent"]
+
+    if mcp_agent is None:
+        return {
+            "final_response": (
+                "⚠️ **Servicio no disponible**: No pude conectar con el agente de administración (Open WebUI) "
+                "durante el inicio del sistema. Por favor verifica que el servidor MCP esté corriendo en el puerto 9001."
+            )
+        }
     
-    # Llamada al agente MCP
+    # Llamada al agente MCP (AgentExecutor espera 'messages' porque así lo definimos en el prompt)
+    # NOTA: AgentExecutor devuelve un dict {'input': ..., 'output': ...}
     result = await mcp_agent.ainvoke({"messages": [HumanMessage(content=query)]})
-    return {"final_response": result["messages"][-1].content}
+    
+    # --- CAMBIO AQUÍ ---
+    # Usamos result["output"] en lugar de result["messages"][-1].content
+    return {"final_response": result["output"]}
+    
 
 async def general_node(state: AgentState):
     """Responde preguntas simples directamente"""

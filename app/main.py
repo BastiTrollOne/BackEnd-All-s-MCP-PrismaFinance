@@ -23,7 +23,7 @@ app = FastAPI(title="PrismaFinance API", version="2.0.0")
 app.include_router(agents_router.router, prefix="/v1")
 
 # URL del servidor p.py (Open WebUI)
-MCP_OPENWEBUI_URL = "http://localhost:9001/sse"
+MCP_OPENWEBUI_URL = "http://127.0.0.1:9001/sse"
 
 # Modelo para recibir peticiones
 class UserQuery(BaseModel):
