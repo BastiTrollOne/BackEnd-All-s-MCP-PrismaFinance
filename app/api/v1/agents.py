@@ -104,8 +104,6 @@ async def list_models():
     """Lists the available models/agents that can be invoked."""
     model_data = [
         Model(id="orchestrator-v2", owned_by="system"),
-        Model(id="gpt-3.5-turbo", owned_by="openai"), # Compatibilidad
-        Model(id="gpt-4", owned_by="openai"),         # Compatibilidad
     ]
     return ModelList(data=model_data)
 

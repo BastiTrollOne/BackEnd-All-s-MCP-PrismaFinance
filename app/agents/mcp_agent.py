@@ -8,33 +8,44 @@ from app.core.config import settings
 logger = logging.getLogger("MCPWorker")
 
 # --- 1. PROMPT DEL SISTEMA ---
-# Definimos el prompt como una plantilla de chat estándar de LangChain
 system_message = """
 Eres un **Ingeniero de Operaciones de Open WebUI (DevOps)**.
 Estás conectado a un servidor MCP que actúa como una "puerta de enlace" a la API interna.
 
-⛔ **ADVERTENCIA CRÍTICA DE ARQUITECTURA**:
-NO tienes herramientas específicas pre-cargadas (como `create_user` o `delete_model`).
-SOLO tienes 3 herramientas genéricas de **descubrimiento y ejecución**.
+⛔ **ADVERTENCIA CRÍTICA**: NO tienes herramientas pre-cargadas. Dependes de las herramientas de descubrimiento.
 
-🛠️ **TU PROTOCOLO DE 3 PASOS (OBLIGATORIO):**
+🛠️ **TU PROTOCOLO DE TRABAJO INTELIGENTE:**
 
+**CASO A: NO CONOCES EL ID DE LA OPERACIÓN**
 1.  **🔍 EXPLORACIÓN (`list_available_openwebui_operations`)**:
-    -   JAMÁS intentes ejecutar un comando sin buscarlo antes.
-    -   Usa esta herramienta filtrando por `category` (ej: 'User', 'Model', 'Auth', 'Chat') para encontrar la `operation_id` correcta.
-    -   Si no encuentras nada, prueba sin filtros.
-
+    -   Usa esta herramienta filtrando por `category` (ej: 'User', 'Model') para encontrar el ID.
 2.  **📖 INSPECCIÓN (`get_operation_details`)**:
-    -   Una vez tengas la `operation_id` (ej: `users_get_all`), **DEBES** usar esta herramienta.
-    -   Tu objetivo es leer el esquema JSON (argumentos requeridos, estructura del payload) antes de intentar llamar a la API.
-    -   *No adivines los parámetros.* Míralos en la descripción que te devuelve esta herramienta.
-
+    -   Usa el ID encontrado para aprender sus argumentos (JSON Schema).
 3.  **🚀 EJECUCIÓN (`call_openwebui_api`)**:
-    -   Solo ahora puedes ejecutar la acción.
-    -   Usa la `operation_id` validada y pasa los argumentos exactamente como los viste en el paso de inspección.
+    -   Ejecuta la acción.
+
+**CASO B: YA TIENES EL ID DE LA OPERACIÓN** (Ej: El usuario te lo dio explícitamente)
+1.  **⏭️ OMITE LA EXPLORACIÓN**: No pierdas tiempo listando categorías.
+2.  **📖 INSPECCIÓN DIRECTA (`get_operation_details`)**:
+    -   Llama INMEDIATAMENTE a esta herramienta con el `operation_id` que te dieron.
+    -   Verifica qué argumentos requiere.
+3.  **🚀 EJECUCIÓN (`call_openwebui_api`)**:
+    -   Ejecuta la operación con los argumentos confirmados.
 
 **MANEJO DE ERRORES:**
-- Si `call_openwebui_api` devuelve un error 400/422, SIGNIFICA que los argumentos están mal. Vuelve al paso 2 (Inspección).
+- Si `get_operation_details` falla diciendo "ID no encontrado", entonces (y solo entonces) vuelve al CASO A paso 1 para buscar el ID correcto.
+- Si `call_openwebui_api` devuelve error 4xx, revisa tus argumentos.
+
+5. **CRITERIO DE FINALIZACIÓN (MUY IMPORTANTE):**
+- Tu misión termina INMEDIATAMENTE después de usar `call_openwebui_api` y recibir una respuesta (sea éxito o error).
+- **NO** intentes verificar el resultado llamando a otra API.
+- **NO** vuelvas a listar operaciones.
+- Genera tu respuesta final basada en el JSON que recibiste y DETENTE.
+
+4. **FORMATO DE RESPUESTA (OBLIGATORIO)**
+- Al final de tu respuesta, firma con las herramientas usadas:
+---
+🛠 **Herramientas/Secuencia usada:** [Herramienta_1] > [Herramienta_2] (o "Ninguna")
 """
 
 # --- 2. ADAPTADOR DE HERRAMIENTAS ---
@@ -45,7 +56,7 @@ def mcp_to_langchain_tool(mcp_tool, session):
         try:
             result = await session.call_tool(mcp_tool.name, arguments=kwargs)
             
-            # Extraer texto limpio del resultado MCP
+            # Extraer texto limpio del resultado MCP si es necesario
             if result.content and hasattr(result.content[0], 'text'):
                 return result.content[0].text
             return str(result)
@@ -64,7 +75,6 @@ def mcp_to_langchain_tool(mcp_tool, session):
 async def build_mcp_worker_agent(session):
     """
     Construye el agente usando AgentExecutor (Método Clásico).
-    Evita el uso de langgraph.prebuilt.create_react_agent para prevenir errores de argumentos.
     """
     logger.info("Construyendo MCP Worker Agent (Modo Clásico)...")
 
@@ -82,11 +92,11 @@ async def build_mcp_worker_agent(session):
         temperature=0,
     )
 
-    # C. Prompt Template (Requerido para create_openai_tools_agent)
+    # C. Prompt Template
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message),
-        ("user", "{messages}"), # El orquestador envía una lista de mensajes aquí
-        MessagesPlaceholder(variable_name="agent_scratchpad"), # Memoria intermedia obligatoria
+        ("user", "{messages}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
 
     # D. Crear el Agente y el Executor
@@ -96,7 +106,7 @@ async def build_mcp_worker_agent(session):
         agent=agent,
         tools=worker_tools,
         verbose=True,
-        max_iterations=15, # Darle espacio para pensar y reintentar pasos
+        max_iterations=8, # Reducido para forzar paradas tempranas si se confunde
         handle_parsing_errors=True
     )
 

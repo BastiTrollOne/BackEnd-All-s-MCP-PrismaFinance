@@ -511,7 +511,7 @@ Asistente:
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
-            verbose=False,  # Set to False to reduce terminal noise
+            verbose=True,  # Set to False to reduce terminal noise
             # Use a lambda to log the error and provide a user-friendly message.
             handle_parsing_errors=lambda e: (
                 brain_logger.error(f"LLM output parsing error: {e}") or
@@ -537,14 +537,20 @@ Asistente:
             intermediate_steps = agent_decision.get("intermediate_steps", [])
 
             if intermediate_steps:
-                # ✅ Hubo tool → los datos vienen de una herramienta (Metabase, etc.)
+                # ✅ Hubo tool → los datos vienen de una herramienta
                 action, observation = intermediate_steps[0]
                 brain_logger.info(f"Agent used tool '{action.tool}'. Returning observation.")
-                return {"output": convert_output_to_markdown(observation)}
+                
+                # --- MODIFICACIÓN: Agregar Footer Manualmente ---
+                output_text = convert_output_to_markdown(observation)
+                footer = f"\n\n---\n🛠 **Herramientas/Secuencia usada:** {action.tool}"
+                return {"output": output_text + footer}
+                # ------------------------------------------------
+
             else:
-                # ❌ Sin tool → El agente respondió directamente (conversación general, etc.)
-                # Devolvemos la respuesta generada por el LLM, que está en la clave 'output'.
+                # ❌ Sin tool → El agente respondió directamente
                 brain_logger.info("Agent answered directly without using tools.")
+                # Aquí confiamos en que el LLM incluyó el footer según su prompt
                 return {"output": agent_decision.get("output", "No se generó una respuesta.")}
 
         except Exception as e:

@@ -1,8 +1,12 @@
+import logging
 from typing import TypedDict, Literal, Annotated
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 from app.core.config import settings
+
+# Configurar Logger
+logger = logging.getLogger("Orchestrator")
 
 # --- Definición del Estado del Grafo ---
 class AgentState(TypedDict):
@@ -12,9 +16,30 @@ class AgentState(TypedDict):
 
 # --- 1. El Clasificador (El "Portero") ---
 async def classifier_node(state: AgentState):
-    """Analiza la última pregunta y decide qué agente usar."""
-    last_message = state["messages"][-1].content
+    """
+    Analiza la última pregunta y decide qué agente usar.
+    Prioriza palabras clave explícitas antes de usar el LLM.
+    """
+    last_message_obj = state["messages"][-1]
+    last_message = last_message_obj.content
+    msg_lower = last_message.lower()
     
+    logger.info(f"⚡ [ORCHESTRATOR] Analizando: '{last_message}'")
+
+    # --- 🚀 ATAJOS DETERMINISTAS (Reglas fijas) ---
+    # Si el usuario menciona explícitamente la herramienta, obedecemos sin pensar.
+    
+    if "metabase" in msg_lower:
+        logger.info("🚀 [ATAJO] Palabra clave 'metabase' detectada -> Metabase Agent")
+        return {"next_agent": "metabase"}
+        
+    if "open webui" in msg_lower or "openwebui" in msg_lower:
+        logger.info("🚀 [ATAJO] Palabra clave 'open webui' detectada -> OpenWebUI Agent")
+        return {"next_agent": "openwebui"}
+    
+    # ----------------------------------------------
+
+    # Si no hay palabras clave, usamos la IA para entender la intención
     llm = ChatOpenAI(
         base_url=settings.LM_STUDIO_URL,
         api_key="not-needed",
@@ -22,12 +47,11 @@ async def classifier_node(state: AgentState):
         temperature=0
     )
     
-    # Prompt de clasificación estricta
     prompt = f"""
     Eres un enrutador inteligente. Tu trabajo es clasificar la intención del usuario en una de estas 3 categorías:
     
-    1. 'METABASE': Preguntas sobre DATOS de negocio (ventas, clientes, ingresos, SQL, tablas, dashboards).
-    2. 'OPENWEBUI': Preguntas de SISTEMA o ADMINISTRACIÓN (instalar modelos, crear usuarios, ver logs, notas, configuración del servidor).
+    1. 'METABASE': Preguntas sobre DATOS de negocio (ventas, clientes, ingresos, SQL, tablas, dashboards, gráficas).
+    2. 'OPENWEBUI': Preguntas técnicas sobre el SISTEMA (usuarios, modelos, configuración, logs, API, servidor).
     3. 'GENERAL': Saludos, preguntas generales o cháchara.
     
     Usuario: "{last_message}"
@@ -38,7 +62,9 @@ async def classifier_node(state: AgentState):
     response = await llm.ainvoke(prompt)
     decision = response.content.strip().upper()
     
-    # Limpieza básica por si el modelo es muy hablador
+    logger.info(f"🚦 [IA DECISION] El modelo eligió: {decision}")
+
+    # Mapeo de la decisión de la IA
     if "METABASE" in decision: return {"next_agent": "metabase"}
     if "OPENWEBUI" in decision: return {"next_agent": "openwebui"}
     return {"next_agent": "general"}
@@ -46,17 +72,18 @@ async def classifier_node(state: AgentState):
 # --- 2. Nodos Ejecutores (Los "Trabajadores") ---
 
 async def metabase_node(state: AgentState, config):
-    """Invoca al BrainAgent (Datos)"""
+    logger.info("📊 [EJECUTANDO] Metabase Agent...")
     query = state["messages"][-1].content
-    # Recuperamos el agente inyectado en la configuración
     brain_agent = config["configurable"]["brain_agent"]
     
-    # Llamada al agente existente
+    if not brain_agent:
+        return {"final_response": "❌ Error: El agente de Metabase no está inicializado."}
+
     result = await brain_agent.ainvoke({"input": query})
     return {"final_response": result["output"]}
 
 async def openwebui_node(state: AgentState, config):
-    """Invoca al MCPAgent (Admin)"""
+    logger.info("🔧 [EJECUTANDO] Open WebUI Agent...")
     query = state["messages"][-1].content
     mcp_agent = config["configurable"]["mcp_agent"]
 
@@ -68,17 +95,12 @@ async def openwebui_node(state: AgentState, config):
             )
         }
     
-    # Llamada al agente MCP (AgentExecutor espera 'messages' porque así lo definimos en el prompt)
-    # NOTA: AgentExecutor devuelve un dict {'input': ..., 'output': ...}
+    # Llamada al agente MCP
     result = await mcp_agent.ainvoke({"messages": [HumanMessage(content=query)]})
-    
-    # --- CAMBIO AQUÍ ---
-    # Usamos result["output"] en lugar de result["messages"][-1].content
     return {"final_response": result["output"]}
-    
 
 async def general_node(state: AgentState):
-    """Responde preguntas simples directamente"""
+    logger.info("💬 [EJECUTANDO] Chat General...")
     llm = ChatOpenAI(base_url=settings.LM_STUDIO_URL, api_key="not-needed", model=settings.LLM_MODEL_NAME)
     response = await llm.ainvoke(state["messages"])
     return {"final_response": response.content}
