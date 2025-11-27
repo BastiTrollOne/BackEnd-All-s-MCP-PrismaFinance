@@ -12,8 +12,8 @@ from langchain_core.messages import HumanMessage
 # Tus módulos
 from app.api.v1 import agents as agents_router
 from app.agents import brain_agent as brain_agent_module # Metabase
-from app.agents import mcp_agent as mcp_agent_module     # OpenWebUI (El archivo que creamos antes)
-from app.agents.orchestrator import build_orchestrator   # El nuevo orquestador
+from app.agents import mcp_agent as mcp_agent_module     # OpenWebUI
+from app.agents.orchestrator import build_orchestrator   # Orquestador
 
 # Configuración de Logs
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -22,7 +22,10 @@ logger = logging.getLogger("PrismaFinanceAPI")
 app = FastAPI(title="PrismaFinance API", version="2.0.0")
 app.include_router(agents_router.router, prefix="/v1")
 
-# URL del servidor p.py (Open WebUI)
+# --- URLS DE LOS SERVIDORES MCP ---
+# m.py corriendo en 9002 (Metabase)
+MCP_METABASE_URL = "http://127.0.0.1:9002/sse"
+# p.py corriendo en 9001 (Open WebUI)
 MCP_OPENWEBUI_URL = "http://127.0.0.1:9001/sse"
 
 # Modelo para recibir peticiones
@@ -34,41 +37,47 @@ async def startup_event():
     logger.info("🚀 Iniciando Sistema Multi-Agente...")
     app.state.exit_stack = AsyncExitStack()
 
+    # --- 1. INICIAR AGENTE METABASE (Brain) ---
+    # Ahora conectamos remotamente al puerto 9002 en lugar de usar Docker localmente
     try:
-        # --- 1. INICIAR AGENTE METABASE (Brain) ---
-        logger.info("📊 Conectando a Metabase...")
-        # Esto arrancará el contenedor Docker de Metabase si usas initialize_mcp_client
-        brain_agent_module.initialize_mcp_client() 
-        metabase_tools = await brain_agent_module.mcp_client.get_tools(server_name="MCP_METABASE")
-        brain_agent_instance = brain_agent_module.LangChainBrainAgent(tools=metabase_tools)
-        logger.info(f"✅ Brain Agent listo con {len(metabase_tools)} herramientas.")
+        logger.info(f"📊 Conectando a Metabase MCP ({MCP_METABASE_URL})...")
+        # Conexión SSE
+        streams_mb = await app.state.exit_stack.enter_async_context(sse_client(MCP_METABASE_URL))
+        session_mb = await app.state.exit_stack.enter_async_context(ClientSession(streams_mb[0], streams_mb[1]))
+        await session_mb.initialize()
+        
+        # Construir el agente usando la nueva factoría en brain_agent.py
+        brain_agent_instance = await brain_agent_module.build_brain_agent(session_mb)
+        logger.info("✅ Brain Agent listo.")
+    except Exception as e:
+        logger.error(f"⚠️ Fallo al conectar con Metabase MCP (m.py): {e}")
+        brain_agent_instance = None
 
-        # --- 2. INICIAR AGENTE OPEN WEBUI (MCP Worker) ---
+    # --- 2. INICIAR AGENTE OPEN WEBUI (MCP Worker) ---
+    # Conexión remota al puerto 9001
+    try:
         logger.info(f"🔧 Conectando a Open WebUI ({MCP_OPENWEBUI_URL})...")
-        try:
-            # Conexión persistente SSE
-            streams = await app.state.exit_stack.enter_async_context(sse_client(MCP_OPENWEBUI_URL))
-            session = await app.state.exit_stack.enter_async_context(ClientSession(streams[0], streams[1]))
-            await session.initialize()
-            
-            # Construir el agente usando la sesión
-            mcp_agent_instance = await mcp_agent_module.build_mcp_worker_agent(session)
-            logger.info("✅ MCP OpenWebUI Agent listo.")
-        except Exception as e:
-            logger.error(f"⚠️ Fallo al conectar con p.py: {e}. El orquestador funcionará sin OpenWebUI.")
-            mcp_agent_instance = None
+        streams_ow = await app.state.exit_stack.enter_async_context(sse_client(MCP_OPENWEBUI_URL))
+        session_ow = await app.state.exit_stack.enter_async_context(ClientSession(streams_ow[0], streams_ow[1]))
+        await session_ow.initialize()
+        
+        # Construir el agente
+        mcp_agent_instance = await mcp_agent_module.build_mcp_worker_agent(session_ow)
+        logger.info("✅ MCP OpenWebUI Agent listo.")
+    except Exception as e:
+        logger.error(f"⚠️ Fallo al conectar con Open WebUI MCP (p.py): {e}")
+        mcp_agent_instance = None
 
-        # --- 3. PREPARAR EL ORQUESTADOR ---
-        # Guardamos los agentes en el estado de la app para usarlos en cada petición
+    # --- 3. PREPARAR EL ORQUESTADOR ---
+    try:
         app.state.orchestrator = build_orchestrator()
         app.state.agents_config = {
             "brain_agent": brain_agent_instance,
             "mcp_agent": mcp_agent_instance
         }
         logger.info("🤖 ORQUESTADOR OPERATIVO.")
-
     except Exception as e:
-        logger.error(f"❌ Error fatal en inicio: {e}")
+        logger.error(f"❌ Error fatal configurando orquestador: {e}")
         raise RuntimeError("Startup failed") from e
 
 @app.on_event("shutdown")
@@ -88,7 +97,6 @@ async def chat_endpoint(request: UserQuery, fastapi_req: Request):
     inputs = {"messages": [HumanMessage(content=request.query)]}
     
     # Ejecutar el grafo del orquestador
-    # Pasamos 'config' en el parámetro 'configurable' para que los nodos accedan a los agentes
     result = await orchestrator.ainvoke(inputs, config={"configurable": config})
     
     return {

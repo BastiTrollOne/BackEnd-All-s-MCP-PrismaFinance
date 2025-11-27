@@ -30,14 +30,16 @@ def create_sql_agent_chain(tools: list):
         raise ValueError("'get_database_schema' tool not found. Cannot create SQL agent.")
 
     # Define the prompt template
+    # CORRECCIÓN: Se añadieron instrucciones específicas para MySQL (backticks vs comillas dobles)
     template = """
 Eres un experto en SQL. Tu tarea es convertir la pregunta de un usuario en una consulta SQL SELECT válida y de solo lectura.
 
 **Instrucciones:**
 1.  Analiza la pregunta del usuario y el esquema de la base de datos para construir la consulta más precisa posible.
+2.  **IMPORTANTE PARA MYSQL:** NO utilices comillas dobles ("") para los nombres de tablas o columnas. Usa backticks (`) si es necesario, o simplemente el nombre sin comillas.
 3.  Utiliza funciones de agregación como `COUNT`, `SUM`, `AVG` y cláusulas como `GROUP BY`, `ORDER BY` cuando la pregunta lo requiera (ej. "top 5", "total de", "promedio de").
-3.  Responde únicamente con el código SQL. No incluyas explicaciones, solo el SQL.
-4.  Si la pregunta parece ser una consulta SQL con errores de sintaxis (ej. espacios en nombres de columnas), corrígela para que sea válida. Por ejemplo, `Product Id` debe ser `PRODUCT_ID`.
+4.  Responde únicamente con el código SQL. No incluyas explicaciones, solo el SQL.
+5.  Si la pregunta parece ser una consulta SQL con errores de sintaxis, corrígela para que sea válida en MySQL.
 
 Esquema:
 {schema}

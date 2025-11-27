@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     METABASE_URL_FOR_DOCKER: str = "http://host.docker.internal:32768"
     METABASE_USERNAME: str = "benjamintoledo421@gmail.com"
     METABASE_PASSWORD: str = "asdf123+"
+    METABASE_API_KEY: str = "mb_hth07dpVuacILmoDGmJwlWS4whoFtCfmpWMR82zbej0="
 
     class Config:
         env_file = ".env"
