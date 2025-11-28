@@ -7,13 +7,13 @@ from pydantic import BaseModel, Field
 from typing import Any, List, Literal, Optional
 from langchain_core.messages import HumanMessage
 
-# Importamos utilidades del brain_agent para el endpoint SQL directo
-from app.agents.brain_agent import normalize_sql
+# --- CORRECCIÓN AQUÍ: Importar desde utils para romper el ciclo ---
+from app.utils import normalize_sql
 
 router = APIRouter()
 logger = logging.getLogger("AgentsAPI")
 
-# --- Modelos de Datos (Igual que antes) ---
+# --- Modelos de Datos ---
 class AgentInvocationRequest(BaseModel):
     prompt: str
 
@@ -61,6 +61,7 @@ class OpenAIChatResponse(BaseModel):
 
 def ensure_select_only(sql: str):
     """Raise an exception if the SQL is not a SELECT statement."""
+    # Simple regex check for dangerous keywords
     if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|MERGE|GRANT|REVOKE|CALL|EXEC)\b",
                  sql, flags=re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Only SELECT (read-only) queries are allowed.")
@@ -79,7 +80,7 @@ async def run_sql_direct(
     sql = normalize_sql(q)
     ensure_select_only(sql)
 
-    # CORRECCIÓN 1: Acceder al agente a través del diccionario de configuración
+    # Recuperar el agente del estado de la app
     agents_config = getattr(request.app.state, "agents_config", {})
     brain_agent = agents_config.get("brain_agent")
 
@@ -88,7 +89,17 @@ async def run_sql_direct(
 
     # Ejecutar consulta
     try:
-        result = await brain_agent.ainvoke_sql_direct(database_id, sql, limit)
+        # Buscamos la herramienta específica "run_sql_query" dentro del agente
+        tool_name = "run_sql_query"
+        tool = next((t for t in brain_agent.tools if t.name == tool_name), None)
+        
+        if tool:
+            # Ejecución directa de la herramienta sin pasar por el LLM (más rápido para este endpoint)
+            result_json = await tool.ainvoke({"database_id": database_id, "sql_query": sql})
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        else:
+            raise HTTPException(status_code=500, detail="Herramienta SQL no encontrada en el agente.")
+
     except Exception as e:
         logger.error(f"Error en run_sql_direct: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -118,17 +129,15 @@ async def openai_chat_endpoint(fastapi_request: Request, request: OpenAIChatRequ
 
     user_query = request.messages[-1].content
     
-    # CORRECCIÓN 2: Usar el Orquestador guardado en el estado
+    # Usar el Orquestador guardado en el estado
     orchestrator = getattr(fastapi_request.app.state, "orchestrator", None)
     agents_config = getattr(fastapi_request.app.state, "agents_config", {})
 
     if not orchestrator:
-        # Fallback de emergencia si el orquestador falló al inicio
         raise HTTPException(status_code=503, detail="El sistema de orquestación no está listo.")
 
     try:
         # Invocar al Grafo del Orquestador
-        # Pasamos 'agents_config' para que los nodos sepan a quién llamar
         inputs = {"messages": [HumanMessage(content=user_query)]}
         
         result = await orchestrator.ainvoke(
